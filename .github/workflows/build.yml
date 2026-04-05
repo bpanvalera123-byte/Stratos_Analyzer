@@ -1,17 +1,39 @@
+name: Build Stratos EXE with Drivers
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install numpy opencv-python PyQt5 pyqtgraph scipy pyinstaller
+
     - name: Download SDR Drivers (DLLs)
       shell: powershell
       run: |
+        # Создаем папку и настраиваем безопасность
         New-Item -ItemType Directory -Path "drivers" -Force
-        $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
-        
-        # Настройка TLS для безопасного соединения
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         
-        # Попытка скачивания с 3 повторами в случае неудачи
+        $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
         $maxRetries = 3
         $retryCount = 0
         $success = $false
         
+        # Цикл скачивания с повторами
         while (-not $success -and $retryCount -lt $maxRetries) {
             try {
                 Write-Host "Попытка скачивания... ($($retryCount + 1))"
@@ -19,15 +41,32 @@
                 $success = $true
             } catch {
                 $retryCount++
-                Write-Host "Ошибка: $($_.Exception.Message). Повтор через 5 секунд..."
+                Write-Host "Ошибка скачивания: $($_.Exception.Message). Повтор через 5 секунд..."
                 Start-Sleep -Seconds 5
             }
         }
 
-        if (-not $success) { throw "Не удалось скачать драйверы после $maxRetries попыток." }
+        if (-not $success) { throw "Критическая ошибка: Не удалось скачать драйверы." }
 
-        # Распаковка DLL
+        # Распаковка только DLL файлов с помощью 7-Zip
+        Write-Host "Распаковка библиотек..."
         if (Test-Path "pothos_setup.exe") {
             & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
             Remove-Item "pothos_setup.exe"
+            Write-Host "Библиотеки успешно извлечены в папку drivers."
         }
+
+    - name: Build with PyInstaller
+      shell: powershell
+      run: |
+        # Сборка в один файл с включением папки drivers
+        pyinstaller --noconfirm --onefile --windowed `
+        --add-data "drivers;drivers" `
+        --name "Stratos_Analyzer_v7" main.py
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Stratos_Executable
+        path: dist/Stratos_Analyzer_v7.exe
+        if-no-files-found: error
