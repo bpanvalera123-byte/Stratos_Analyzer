@@ -14,7 +14,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
+        python-version: '3.10' # УБЕДИТЕСЬ, ЧТО ЗДЕСЬ СТОИТ 3.10 ИЛИ ВЫШЕ
 
     - name: Install dependencies
       run: |
@@ -24,22 +24,15 @@ jobs:
     - name: Inject Critical Drivers
       shell: powershell
       run: |
-        # Создаем папку для драйверов в корне
         New-Item -ItemType Directory -Path "drivers" -Force
-        
-        # Загружаем DLL по прямым ссылкам
         curl.exe -L -o "drivers/hackrf.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/hackrf.dll"
         curl.exe -L -o "drivers/SoapySDR.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/SoapySDR.dll"
         curl.exe -L -o "drivers/libusb-1.0.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/libusb-1.0.dll"
         curl.exe -L -o "drivers/pthreadVC2.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/pthreadVC2.dll"
-        
-        Write-Host "✅ Drivers ready."
 
     - name: Build with PyInstaller
       shell: powershell
       run: |
-        # Мы указываем путь к main.py с учетом вашей структуры папок
-        # И объединяем папку drivers в финальный EXE
         pyinstaller --noconfirm --onefile --windowed --add-data "drivers;drivers" --name "Stratos_Analyzer_v7" main.py
 
     - name: Upload Artifact
