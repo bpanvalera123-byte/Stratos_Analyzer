@@ -1,4 +1,4 @@
-name: Build Stratos PRO from ZIP
+name: Build Stratos PRO (Auto-Inject DLLs)
 
 on:
   push:
@@ -21,24 +21,37 @@ jobs:
         python -m pip install --upgrade pip
         pip install numpy opencv-python PyQt5 pyqtgraph scipy pyinstaller
 
-    - name: Extract Drivers ZIP
+    - name: Inject Critical Drivers
       shell: powershell
       run: |
-        # Создаем папку drivers
+        # 1. Создаем целевую папку
         New-Item -ItemType Directory -Path "drivers" -Force
         
-        # Распаковываем ваш архив drivers.zip в созданную папку
-        if (Test-Path "drivers.zip") {
-            Expand-Archive -Path "drivers.zip" -DestinationPath "drivers" -Force
-            Write-Host "✅ Драйверы успешно извлечены из ZIP."
-        } else {
-            throw "❌ Ошибка: Файл drivers.zip не найден в репозитории!"
+        # 2. Список прямых ссылок на критические DLL (x64)
+        # Эти файлы весят суммарно около 5-7 МБ, скачиваются мгновенно.
+        $dlls = @(
+            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/hackrf.dll",
+            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/SoapySDR.dll",
+            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/libusb-1.0.dll",
+            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/pthreadVC2.dll"
+        )
+        
+        Write-Host "🚀 Начинаю точечную инъекцию драйверов..."
+        
+        foreach ($url in $dlls) {
+            $filename = Split-Path $url -Leaf
+            Write-Host "📥 Загрузка $filename..."
+            curl.exe -L -f -o "drivers/$filename" $url
+            if ($LASTEXITCODE -ne 0) { throw "Ошибка загрузки $filename" }
         }
+        
+        Write-Host "✅ Все библиотеки успешно подтянуты."
+        Get-ChildItem "drivers" | Select-Object Name
 
     - name: Build with PyInstaller
       shell: powershell
       run: |
-        # Собираем EXE, используя файлы из распакованной папки
+        # Сборка EXE с автоматическим включением подтянутых драйверов
         pyinstaller --noconfirm --onefile --windowed `
         --add-data "drivers;drivers" `
         --name "Stratos_Analyzer_v7" main.py
