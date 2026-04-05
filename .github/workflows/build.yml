@@ -24,42 +24,42 @@ jobs:
     - name: Download SDR Drivers (DLLs)
       shell: powershell
       run: |
-        # Создаем папку и настраиваем безопасность
+        # 1. Подготовка окружения
         New-Item -ItemType Directory -Path "drivers" -Force
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         
         $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
-        $maxRetries = 3
-        $retryCount = 0
-        $success = $false
         
-        # Цикл скачивания с повторами
-        while (-not $success -and $retryCount -lt $maxRetries) {
-            try {
-                Write-Host "Попытка скачивания... ($($retryCount + 1))"
-                Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe" -TimeoutSec 300 -UserAgent "Mozilla/5.0"
-                $success = $true
-            } catch {
-                $retryCount++
-                Write-Host "Ошибка скачивания: $($_.Exception.Message). Повтор через 5 секунд..."
-                Start-Sleep -Seconds 5
-            }
+        Write-Host "Начинаю загрузку драйверов через curl..."
+        
+        # 2. Скачивание с использованием curl (более надежен для больших файлов)
+        # -L (следовать редиректам), -f (ошибка при сбое), -S (показывать ошибки)
+        curl.exe -L -f -S -o pothos_setup.exe $url
+        
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "Curl не справился. Пробую запасной вариант Invoke-WebRequest..."
+            Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe" -TimeoutSec 600
         }
 
-        if (-not $success) { throw "Критическая ошибка: Не удалось скачать драйверы." }
-
-        # Распаковка только DLL файлов с помощью 7-Zip
-        Write-Host "Распаковка библиотек..."
+        # 3. Проверка наличия файла и распаковка
         if (Test-Path "pothos_setup.exe") {
+            Write-Host "Файл загружен. Начинаю извлечение DLL..."
+            # Извлекаем все DLL из инсталлера в папку drivers
             & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
+            
+            # Удаляем временный инсталлер, чтобы не раздувать архив
             Remove-Item "pothos_setup.exe"
-            Write-Host "Библиотеки успешно извлечены в папку drivers."
+            Write-Host "Распаковка завершена. Содержимое папки drivers:"
+            Get-ChildItem "drivers" | Select-Object Name
+        } else {
+            throw "Критическая ошибка: Файл драйверов не был загружен."
         }
 
     - name: Build with PyInstaller
       shell: powershell
       run: |
-        # Сборка в один файл с включением папки drivers
+        # Сборка EXE с интеграцией папки drivers
+        # Используем ` для переноса строки в PowerShell
         pyinstaller --noconfirm --onefile --windowed `
         --add-data "drivers;drivers" `
         --name "Stratos_Analyzer_v7" main.py
