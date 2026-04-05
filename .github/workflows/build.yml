@@ -1,4 +1,4 @@
-name: Build Stratos EXE
+name: Build Stratos EXE with Drivers
 
 on:
   push:
@@ -20,9 +20,27 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: Download SDR Drivers (DLLs)
+      shell: powershell
+      run: |
+        # Создаем папку для драйверов
+        New-Item -ItemType Directory -Path "drivers"
+        
+        # Скачиваем архив с драйверами (PothosSDR - универсальный набор)
+        $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
+        Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe"
+        
+        # Распаковываем только нужные DLL с помощью 7-Zip (он есть на виртуалке GitHub)
+        & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
+        
+        # Очистка лишнего
+        Remove-Item "pothos_setup.exe"
+
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconfirm --onefile --windowed --add-data "drivers;drivers" --name "Stratos_Analyzer_v7" main.py
+        pyinstaller --noconfirm --onefile --windowed `
+        --add-data "drivers;drivers" `
+        --name "Stratos_Analyzer_v7" main.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v3
