@@ -1,43 +1,33 @@
-name: Build Stratos EXE with Drivers
-
-on:
-  push:
-    branches: [ "main" ]
-
-jobs:
-  build:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v4  # Обновили и checkout до актуальной v4
-
-    - name: Set up Python
-      uses: actions/setup-python@v5 # Обновили до v5
-      with:
-        python-version: '3.10'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-
     - name: Download SDR Drivers (DLLs)
       shell: powershell
       run: |
-        New-Item -ItemType Directory -Path "drivers"
+        New-Item -ItemType Directory -Path "drivers" -Force
         $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
-        Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe"
-        & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
-        Remove-Item "pothos_setup.exe"
+        
+        # Настройка TLS для безопасного соединения
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        
+        # Попытка скачивания с 3 повторами в случае неудачи
+        $maxRetries = 3
+        $retryCount = 0
+        $success = $false
+        
+        while (-not $success -and $retryCount -lt $maxRetries) {
+            try {
+                Write-Host "Попытка скачивания... ($($retryCount + 1))"
+                Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe" -TimeoutSec 300 -UserAgent "Mozilla/5.0"
+                $success = $true
+            } catch {
+                $retryCount++
+                Write-Host "Ошибка: $($_.Exception.Message). Повтор через 5 секунд..."
+                Start-Sleep -Seconds 5
+            }
+        }
 
-    - name: Build with PyInstaller
-      run: |
-        pyinstaller --noconfirm --onefile --windowed `
-        --add-data "drivers;drivers" `
-        --name "Stratos_Analyzer_v7" main.py
+        if (-not $success) { throw "Не удалось скачать драйверы после $maxRetries попыток." }
 
-    - name: Upload Artifact
-      uses: actions/upload-artifact@v4 # ТА САМАЯ ПРАВКА: обновили до v4
-      with:
-        name: Stratos_Executable
-        path: dist/Stratos_Analyzer_v7.exe
-        if-no-files-found: error # Дополнительная проверка на ошибки
+        # Распаковка DLL
+        if (Test-Path "pothos_setup.exe") {
+            & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
+            Remove-Item "pothos_setup.exe"
+        }
