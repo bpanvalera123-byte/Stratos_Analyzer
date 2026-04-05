@@ -1,4 +1,4 @@
-name: Build Stratos EXE with Drivers
+name: Build Stratos PRO from ZIP
 
 on:
   push:
@@ -21,45 +21,24 @@ jobs:
         python -m pip install --upgrade pip
         pip install numpy opencv-python PyQt5 pyqtgraph scipy pyinstaller
 
-    - name: Download SDR Drivers (DLLs)
+    - name: Extract Drivers ZIP
       shell: powershell
       run: |
-        # 1. Подготовка окружения
+        # Создаем папку drivers
         New-Item -ItemType Directory -Path "drivers" -Force
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         
-        $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
-        
-        Write-Host "Начинаю загрузку драйверов через curl..."
-        
-        # 2. Скачивание с использованием curl (более надежен для больших файлов)
-        # -L (следовать редиректам), -f (ошибка при сбое), -S (показывать ошибки)
-        curl.exe -L -f -S -o pothos_setup.exe $url
-        
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "Curl не справился. Пробую запасной вариант Invoke-WebRequest..."
-            Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe" -TimeoutSec 600
-        }
-
-        # 3. Проверка наличия файла и распаковка
-        if (Test-Path "pothos_setup.exe") {
-            Write-Host "Файл загружен. Начинаю извлечение DLL..."
-            # Извлекаем все DLL из инсталлера в папку drivers
-            & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
-            
-            # Удаляем временный инсталлер, чтобы не раздувать архив
-            Remove-Item "pothos_setup.exe"
-            Write-Host "Распаковка завершена. Содержимое папки drivers:"
-            Get-ChildItem "drivers" | Select-Object Name
+        # Распаковываем ваш архив drivers.zip в созданную папку
+        if (Test-Path "drivers.zip") {
+            Expand-Archive -Path "drivers.zip" -DestinationPath "drivers" -Force
+            Write-Host "✅ Драйверы успешно извлечены из ZIP."
         } else {
-            throw "Критическая ошибка: Файл драйверов не был загружен."
+            throw "❌ Ошибка: Файл drivers.zip не найден в репозитории!"
         }
 
     - name: Build with PyInstaller
       shell: powershell
       run: |
-        # Сборка EXE с интеграцией папки drivers
-        # Используем ` для переноса строки в PowerShell
+        # Собираем EXE, используя файлы из распакованной папки
         pyinstaller --noconfirm --onefile --windowed `
         --add-data "drivers;drivers" `
         --name "Stratos_Analyzer_v7" main.py
@@ -69,4 +48,3 @@ jobs:
       with:
         name: Stratos_Executable
         path: dist/Stratos_Analyzer_v7.exe
-        if-no-files-found: error
