@@ -22,7 +22,7 @@ jobs:
 
     - name: Build with PyInstaller
       run: |
-        pyinstaller --noconfirm --onefile --windowed --name "Stratos_Analyzer_v7" main.py
+        pyinstaller --noconfirm --onefile --windowed --add-data "drivers;drivers" --name "Stratos_Analyzer_v7" main.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v3
