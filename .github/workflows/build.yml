@@ -8,10 +8,10 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4  # Обновили и checkout до актуальной v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5 # Обновили до v5
       with:
         python-version: '3.10'
 
@@ -23,17 +23,10 @@ jobs:
     - name: Download SDR Drivers (DLLs)
       shell: powershell
       run: |
-        # Создаем папку для драйверов
         New-Item -ItemType Directory -Path "drivers"
-        
-        # Скачиваем архив с драйверами (PothosSDR - универсальный набор)
         $url = "https://github.com/pothosware/PothosSDR/releases/download/2021.07.25/PothosSDR-2021.07.25-vc16-x64.exe"
         Invoke-WebRequest -Uri $url -OutFile "pothos_setup.exe"
-        
-        # Распаковываем только нужные DLL с помощью 7-Zip (он есть на виртуалке GitHub)
         & "C:\Program Files\7-Zip\7z.exe" e pothos_setup.exe -odrivers *.dll -r
-        
-        # Очистка лишнего
         Remove-Item "pothos_setup.exe"
 
     - name: Build with PyInstaller
@@ -43,7 +36,8 @@ jobs:
         --name "Stratos_Analyzer_v7" main.py
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4 # ТА САМАЯ ПРАВКА: обновили до v4
       with:
         name: Stratos_Executable
         path: dist/Stratos_Analyzer_v7.exe
+        if-no-files-found: error # Дополнительная проверка на ошибки
