@@ -1,0 +1,6 @@
+numpy
+opencv-python
+pyqt5
+pyqtgraph
+scipy
+pyinstaller
