@@ -24,28 +24,23 @@ jobs:
     - name: Inject Critical Drivers
       shell: powershell
       run: |
-        # 1. Создаем папку для библиотек
         New-Item -ItemType Directory -Path "drivers" -Force
+        Write-Host "🚀 Downloading drivers..."
         
-        Write-Host "🚀 Загрузка драйверов напрямую..."
-        
-        # 2. Поочередное скачивание файлов через curl
-        # Каждая строка — отдельная команда, чтобы избежать ошибок синтаксиса
+        # Каждая загрузка отдельной строкой без лишних переменных
         curl.exe -L -o "drivers/hackrf.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/hackrf.dll"
         curl.exe -L -o "drivers/SoapySDR.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/SoapySDR.dll"
         curl.exe -L -o "drivers/libusb-1.0.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/libusb-1.0.dll"
         curl.exe -L -o "drivers/pthreadVC2.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/pthreadVC2.dll"
         
-        Write-Host "✅ Проверка файлов в папке drivers:"
-        Get-ChildItem "drivers" | Select-Object Name
+        Write-Host "✅ Done."
+        Get-ChildItem "drivers"
 
     - name: Build with PyInstaller
       shell: powershell
       run: |
-        # Сборка EXE. Используем символ ` для переноса строк в PowerShell
-        pyinstaller --noconfirm --onefile --windowed `
-        --add-data "drivers;drivers" `
-        --name "Stratos_Analyzer_v7" main.py
+        # Здесь мы убрали все сложные переносы, чтобы PowerShell не путался
+        pyinstaller --noconfirm --onefile --windowed --add-data "drivers;drivers" --name "Stratos_Analyzer_v7" main.py
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
