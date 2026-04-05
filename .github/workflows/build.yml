@@ -1,4 +1,4 @@
-name: Build Stratos PRO (Auto-Inject DLLs)
+name: Build Stratos PRO Fixed
 
 on:
   push:
@@ -24,34 +24,25 @@ jobs:
     - name: Inject Critical Drivers
       shell: powershell
       run: |
-        # 1. Создаем целевую папку
+        # 1. Создаем папку для библиотек
         New-Item -ItemType Directory -Path "drivers" -Force
         
-        # 2. Список прямых ссылок на критические DLL (x64)
-        # Эти файлы весят суммарно около 5-7 МБ, скачиваются мгновенно.
-        $dlls = @(
-            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/hackrf.dll",
-            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/SoapySDR.dll",
-            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/libusb-1.0.dll",
-            "https://github.com/pothosware/PothosSDR/raw/master/wrapper/pthreadVC2.dll"
-        )
+        Write-Host "🚀 Загрузка драйверов напрямую..."
         
-        Write-Host "🚀 Начинаю точечную инъекцию драйверов..."
+        # 2. Поочередное скачивание файлов через curl
+        # Каждая строка — отдельная команда, чтобы избежать ошибок синтаксиса
+        curl.exe -L -o "drivers/hackrf.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/hackrf.dll"
+        curl.exe -L -o "drivers/SoapySDR.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/SoapySDR.dll"
+        curl.exe -L -o "drivers/libusb-1.0.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/libusb-1.0.dll"
+        curl.exe -L -o "drivers/pthreadVC2.dll" "https://github.com/pothosware/PothosSDR/raw/master/wrapper/pthreadVC2.dll"
         
-        foreach ($url in $dlls) {
-            $filename = Split-Path $url -Leaf
-            Write-Host "📥 Загрузка $filename..."
-            curl.exe -L -f -o "drivers/$filename" $url
-            if ($LASTEXITCODE -ne 0) { throw "Ошибка загрузки $filename" }
-        }
-        
-        Write-Host "✅ Все библиотеки успешно подтянуты."
+        Write-Host "✅ Проверка файлов в папке drivers:"
         Get-ChildItem "drivers" | Select-Object Name
 
     - name: Build with PyInstaller
       shell: powershell
       run: |
-        # Сборка EXE с автоматическим включением подтянутых драйверов
+        # Сборка EXE. Используем символ ` для переноса строк в PowerShell
         pyinstaller --noconfirm --onefile --windowed `
         --add-data "drivers;drivers" `
         --name "Stratos_Analyzer_v7" main.py
