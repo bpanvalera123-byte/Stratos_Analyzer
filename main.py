@@ -1,61 +1,57 @@
-# Stratos_Analyzer
+        #
 import sys
 import os
 import time
 import hashlib
 import subprocess
-import urllib.request
-import winreg
+import ctypes
 import numpy as np
 import cv2
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
 from scipy.signal import firwin, lfilter
 
-# --- 1. АВТО-ПОДГОТОВКА СИСТЕМЫ (VISUAL C++) ---
-def check_and_install_vc_redist():
-    """Проверяет наличие Visual C++ 2015-2022 и ставит его, если нужно."""
-    vcredist_url = "https://aka.ms/vs/17/release/vc_redist.x64.exe"
-    reg_path = r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64"
-    try:
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, reg_path)
-        winreg.CloseKey(key)
-    except FileNotFoundError:
-        try:
-            print("🚀 Загрузка системных компонентов Microsoft...")
-            urllib.request.urlretrieve(vcredist_url, "vc_redist_install.exe")
-            print("📦 Запуск тихой установки...")
-            subprocess.run(["vc_redist_install.exe", "/passive", "/norestart"], check=True)
-            os.remove("vc_redist_install.exe")
-        except Exception as e:
-            print(f"⚠️ Ошибка авто-установки: {e}")
-
+# --- 1. АВТОНОМНАЯ ПОДГОТОВКА ОКРУЖЕНИЯ (LOCKED DLL LOADING) ---
 def setup_io_environment():
-    check_and_install_vc_redist()
-    # Определяем путь к папке драйверов корректно для .exe
+    """Принудительно подтягивает локальные DLL из папки drivers."""
     if getattr(sys, 'frozen', False):
         root = sys._MEIPASS
     else:
         root = os.path.dirname(os.path.abspath(__file__))
     
-    drv_path = os.path.join(root, "drivers")
+    drv_path = os.path.normpath(os.path.join(root, "drivers"))
     
     if os.path.exists(drv_path):
-        os.environ['SOAPY_SDR_ROOT'] = drv_path
         os.environ['PATH'] = drv_path + os.pathsep + os.environ['PATH']
+        os.environ['SOAPY_SDR_ROOT'] = drv_path
+        os.environ['SOAPY_SDR_PLUGIN_PATH'] = os.path.join(drv_path, "modules64")
+        
         if hasattr(os, 'add_dll_directory'):
             try:
                 os.add_dll_directory(drv_path)
             except Exception:
                 pass
 
-setup_io_environment()
+        # Принудительный прогруз рантайма VC++
+        vc_libs = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "concrt140.dll"]
+        for dll in vc_libs:
+            dll_full_path = os.path.join(drv_path, dll)
+            if os.path.exists(dll_full_path):
+                try:
+                    ctypes.WinDLL(dll_full_path)
+                except Exception:
+                    pass
+    return drv_path
+
+# Инициализация путей
+DRIVERS_DIR = setup_io_environment()
 
 try:
     import SoapySDR
     from SoapySDR import *
     SDR_SUPPORTED = True
-except Exception:
+except Exception as e:
+    print(f"🔴 Ошибка SDR модулей: {e}")
     SDR_SUPPORTED = False
 
 # --- 2. СИСТЕМА БЕЗОПАСНОСТИ (HWID + PASS) ---
@@ -74,7 +70,6 @@ class SecurityCore:
             return "hwid_generic_v1"
 
     def wipe_system(self):
-        """Самоликвидация данных."""
         if os.path.exists("data_record.db"):
             os.remove("data_record.db")
         self.settings.clear()
@@ -95,8 +90,7 @@ class SecurityCore:
             key, ok = QtWidgets.QInputDialog.getText(parent, "🛡️ System Activation", 
                                                     f"Enter Key ({fails+1}/{self.max_fails}):", 
                                                     QtWidgets.QLineEdit.Password)
-            if not ok:
-                sys.exit()
+            if not ok: sys.exit()
             if hashlib.sha256(key.encode()).hexdigest() == self.master_hash:
                 self.settings.setValue("hwid_token", current_hwid)
                 self.settings.setValue("fails", 0)
@@ -104,11 +98,10 @@ class SecurityCore:
             else:
                 fails += 1
                 self.settings.setValue("fails", fails)
-                if fails >= self.max_fails:
-                    self.wipe_system()
+                if fails >= self.max_fails: self.wipe_system()
         sys.exit()
 
-# --- 3. РАДИО-ДВИЖОК (SCANNER + DSP) ---
+# --- 3. РАДИО-ДВИЖОК ---
 class RadioEngine(QtCore.QThread):
     on_frame = QtCore.pyqtSignal(np.ndarray)
     on_spec = QtCore.pyqtSignal(np.ndarray, bool)
@@ -120,22 +113,13 @@ class RadioEngine(QtCore.QThread):
         self.running = True
         self.is_demo = True
         self.device = None
-        
         self.freq = 2400.0
-        self.scan_start = 1.0
-        self.scan_end = 10000.0
-        self.scan_step = 20.0
-        
         self.gain = 16
         self.threshold = -25
+        self.is_scanning = False
         self.lock_duration = 5.0
         self.last_lock_time = 0
-        self.is_scanning = False
-        
-        self.use_lpf = True
-        self.use_agc = True
-        self.is_recording = False
-        self.raw_out = None
+        self.scan_step = 20.0
 
     def run(self):
         if SDR_SUPPORTED:
@@ -145,12 +129,10 @@ class RadioEngine(QtCore.QThread):
                 self.rx_stream = self.device.setupStream(SOAPY_SDR_RX, "CF32")
                 self.device.activateStream(self.rx_stream)
                 self.is_demo = False
-            except Exception:
+            except:
                 self.is_demo = True
 
         buf = np.zeros(16384, dtype=np.complex64)
-        lpf_taps = firwin(32, 0.25)
-
         while self.running:
             if not self.is_demo and self.device:
                 try:
@@ -159,70 +141,45 @@ class RadioEngine(QtCore.QThread):
                     sr = self.device.readStream(self.rx_stream, [buf], len(buf), timeoutUs=50000)
                     if sr.ret > 0:
                         data = buf
-                        try:
-                            temp = float(self.device.readSensor("active_board_temp"))
-                        except Exception:
-                            temp = 0.0
-                    else:
-                        continue
-                except Exception:
+                    else: continue
+                except:
                     self.is_demo = True
                     continue
             else:
                 time.sleep(0.04)
                 data = np.random.normal(0, 0.01, 16384) + 1j*np.random.normal(0, 0.01, 16384)
-                temp = 36.6
-
-            if self.use_lpf:
-                data = lfilter(lpf_taps, 1.0, data)
-            if self.use_agc:
-                avg = np.mean(np.abs(data))
-                if avg > 0:
-                    data /= (avg * 2)
-
-            if self.is_recording and self.raw_out:
-                data.astype(np.complex64).tofile(self.raw_out)
 
             psd = 20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(data))) + 1e-9)
             peak = np.max(psd)
             detected = peak > self.threshold
             
-            if self.is_scanning:
-                if detected:
-                    self.last_lock_time = time.time()
-                elif (time.time() - self.last_lock_time) > self.lock_duration:
+            if self.is_scanning and not detected:
+                if (time.time() - self.last_lock_time) > self.lock_duration:
                     self.freq += self.scan_step
-                    if self.freq > self.scan_end:
-                        self.freq = self.scan_start
+                    if self.freq > 6000: self.freq = 1.0
                     self.on_freq_changed.emit(self.freq)
+            elif detected:
+                self.last_lock_time = time.time()
 
             self.on_spec.emit(psd[::16], detected)
-            self.on_stat.emit(temp, self.is_demo)
+            self.on_stat.emit(36.6, self.is_demo)
             
             img = np.zeros((480, 640, 3), dtype=np.uint8)
-            status_color = (0, 255, 0) if detected else (0, 120, 0)
+            color = (0, 255, 0) if detected else (0, 120, 0)
             cv2.putText(img, f"{'LOCKED' if detected else 'SCANNING'} | {self.freq:.2f} MHz", 
-                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
+                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             self.on_frame.emit(img)
 
     def stop(self):
         self.running = False
-        if self.device:
-            try:
-                self.device.closeStream(self.rx_stream)
-            except Exception:
-                pass
-        if self.raw_out:
-            self.raw_out.close()
         self.wait()
 
-# --- 4. ОСНОВНОЙ ИНТЕРФЕЙС ---
+# --- 4. ИНТЕРФЕЙС ---
 class StratosPro(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.security = SecurityCore()
-        if not self.security.authenticate(self):
-            sys.exit()
+        if not self.security.authenticate(self): sys.exit()
         
         self.engine = RadioEngine()
         self.init_ui()
@@ -236,20 +193,83 @@ class StratosPro(QtWidgets.QMainWindow):
     def init_ui(self):
         self.setWindowTitle("STRATOS RF ANALYZER v7.0 [PRO-LINK]")
         self.setStyleSheet("background: #050505; color: #00ff41; font-family: Consolas;")
-        self.setMinimumSize(1300, 900)
+        self.setMinimumSize(1200, 800)
 
         main_w = QtWidgets.QWidget()
         self.setCentralWidget(main_w)
         lay = QtWidgets.QHBoxLayout(main_w)
 
-        # Боковая панель
+        # Панель инструментов
         side = QtWidgets.QVBoxLayout()
+        side.addWidget(QtWidgets.QLabel("--- SYSTEM ---"))
         
-        # Группа: Настройки приема
-        g_rx = self.create_group("📡 ПРИЕМНИК")
-        self.f_val = self.create_spin(1, 10000, 2400)
+        # Кнопка Zadig
+        self.zadig_btn = QtWidgets.QPushButton("🛠 INSTALL USB DRIVER")
+        self.zadig_btn.setStyleSheet("background: #111; border: 1px solid #00ff41; padding: 5px;")
+        self.zadig_btn.clicked.connect(self.run_zadig)
+        side.addWidget(self.zadig_btn)
+        
+        side.addSpacing(20)
+        
+        self.f_val = QtWidgets.QDoubleSpinBox()
+        self.f_val.setRange(1.0, 10000.0)
+        self.f_val.setValue(2400.0)
         self.f_val.valueChanged.connect(lambda v: setattr(self.engine, 'freq', v))
+        side.addWidget(QtWidgets.QLabel("FREQ (MHz):"))
+        side.addWidget(self.f_val)
+
+        self.scan_btn = QtWidgets.QPushButton("START SCANNING")
+        self.scan_btn.setCheckable(True)
+        self.scan_btn.toggled.connect(self.toggle_scan)
+        side.addWidget(self.scan_btn)
+
+        side.addStretch()
+        self.stat_lab = QtWidgets.QLabel("STATUS: READY")
+        side.addWidget(self.stat_lab)
+        lay.addLayout(side, 1)
+
+        # Графика
+        v_lay = QtWidgets.QVBoxLayout()
+        self.view = QtWidgets.QLabel()
+        v_lay.addWidget(self.view)
         
-        g_rx.layout().addWidget(QtWidgets.QLabel("ЧАСТОТА (MHz):"))
-        
-        #
+        self.plot = pg.PlotWidget()
+        self.curve = self.plot.plot(pen=pg.mkPen('#00ff41'))
+        self.plot.setYRange(-100, 20)
+        v_lay.addWidget(self.plot)
+        lay.addLayout(v_lay, 4)
+
+    def run_zadig(self):
+        """Запуск Zadig из папки drivers."""
+        zadig_path = os.path.join(DRIVERS_DIR, "Zadig.exe")
+        if os.path.exists(zadig_path):
+            try:
+                # Запуск с правами администратора
+                ctypes.windll.shell32.ShellExecuteW(None, "runas", zadig_path, None, None, 1)
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Error", f"Could not start Zadig: {e}")
+        else:
+            QtWidgets.QMessageBox.critical(self, "Error", f"Zadig.exe not found in drivers folder!")
+
+    def toggle_scan(self, state):
+        self.engine.is_scanning = state
+        self.scan_btn.setText("STOP SCAN" if state else "START SCAN")
+
+    def update_video(self, img):
+        h, w, c = img.shape
+        qimg = QtGui.QImage(img.data, w, h, w*c, QtGui.QImage.Format_RGB888)
+        self.view.setPixmap(QtGui.QPixmap.fromImage(qimg))
+
+    def update_spectrum(self, data, detected):
+        self.curve.setData(data)
+        self.curve.setPen(pg.mkPen('#ff3131' if detected else '#00ff41'))
+
+    def update_status(self, temp, is_demo):
+        mode = "[DEMO]" if is_demo else "[HARDWARE]"
+        self.stat_lab.setText(f"MODE: {mode}\nTEMP: {temp:.1f}°C")
+
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    window = StratosPro()
+    window.show()
+    sys.exit(app.exec_())
