@@ -1,4 +1,3 @@
-        #
 import sys
 import os
 import time
@@ -11,9 +10,9 @@ import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
 from scipy.signal import firwin, lfilter
 
-# --- 1. АВТОНОМНАЯ ПОДГОТОВКА ОКРУЖЕНИЯ (LOCKED DLL LOADING) ---
+# --- 1. ПОДГОТОВКА ОКРУЖЕНИЯ ---
 def setup_io_environment():
-    """Принудительно подтягивает локальные DLL из папки drivers."""
+    """Настройка путей для DLL и драйверов SDR."""
     if getattr(sys, 'frozen', False):
         root = sys._MEIPASS
     else:
@@ -32,7 +31,6 @@ def setup_io_environment():
             except Exception:
                 pass
 
-        # Принудительный прогруз рантайма VC++
         vc_libs = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "concrt140.dll"]
         for dll in vc_libs:
             dll_full_path = os.path.join(drv_path, dll)
@@ -43,7 +41,6 @@ def setup_io_environment():
                     pass
     return drv_path
 
-# Инициализация путей
 DRIVERS_DIR = setup_io_environment()
 
 try:
@@ -54,11 +51,11 @@ except Exception as e:
     print(f"🔴 Ошибка SDR модулей: {e}")
     SDR_SUPPORTED = False
 
-# --- 2. СИСТЕМА БЕЗОПАСНОСТИ (HWID + PASS) ---
+# --- 2. СИСТЕМА БЕЗОПАСНОСТИ (ПАРОЛЬ: 5254) ---
 class SecurityCore:
     def __init__(self):
         self.settings = QtCore.QSettings("SystemVendor", "NetworkAnalyzer")
-        self.master_hash = "64f9f74786419736f3320c978e8d89e5352613d9692488880654160453303866" # 52546808
+        self.master_hash = "f29406085a5255476d65377f5f3e97022204c664319525c3822f30b9f712435e"
         self.max_fails = 10
 
     def get_hwid(self):
@@ -73,32 +70,44 @@ class SecurityCore:
         if os.path.exists("data_record.db"):
             os.remove("data_record.db")
         self.settings.clear()
-        QtWidgets.QMessageBox.critical(None, "SECURITY", "Access Denied. Local data wiped.")
+        self.settings.sync()
+        QtWidgets.QMessageBox.critical(None, "БЕЗОПАСНОСТЬ", "Доступ запрещен. Локальные данные стерты.")
         sys.exit()
 
     def authenticate(self, parent):
         current_hwid = self.get_hwid()
         saved_hwid = self.settings.value("hwid_token")
-        fails = int(self.settings.value("fails", 0))
+        
+        try:
+            fails = int(self.settings.value("fails", 0))
+        except (ValueError, TypeError):
+            fails = 0
 
         if saved_hwid == current_hwid:
             return True
+            
         if fails >= self.max_fails:
             self.wipe_system()
 
         while fails < self.max_fails:
-            key, ok = QtWidgets.QInputDialog.getText(parent, "🛡️ System Activation", 
-                                                    f"Enter Key ({fails+1}/{self.max_fails}):", 
+            key, ok = QtWidgets.QInputDialog.getText(parent, "🛡️ Активация системы", 
+                                                    f"Введите ключ доступа ({fails+1}/{self.max_fails}):", 
                                                     QtWidgets.QLineEdit.Password)
-            if not ok: sys.exit()
+            if not ok: 
+                sys.exit()
+            
             if hashlib.sha256(key.encode()).hexdigest() == self.master_hash:
                 self.settings.setValue("hwid_token", current_hwid)
                 self.settings.setValue("fails", 0)
+                self.settings.sync()
                 return True
             else:
                 fails += 1
                 self.settings.setValue("fails", fails)
-                if fails >= self.max_fails: self.wipe_system()
+                self.settings.sync()
+                if fails >= self.max_fails: 
+                    self.wipe_system()
+        
         sys.exit()
 
 # --- 3. РАДИО-ДВИЖОК ---
@@ -166,7 +175,8 @@ class RadioEngine(QtCore.QThread):
             
             img = np.zeros((480, 640, 3), dtype=np.uint8)
             color = (0, 255, 0) if detected else (0, 120, 0)
-            cv2.putText(img, f"{'LOCKED' if detected else 'SCANNING'} | {self.freq:.2f} MHz", 
+            status_text = "ЗАХВАТ" if detected else "СКАНИРОВАНИЕ"
+            cv2.putText(img, f"{status_text} | {self.freq:.2f} МГц", 
                         (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             self.on_frame.emit(img)
 
@@ -174,12 +184,13 @@ class RadioEngine(QtCore.QThread):
         self.running = False
         self.wait()
 
-# --- 4. ИНТЕРФЕЙС ---
+# --- 4. ИНТЕРФЕЙС (РУССКИЙ ЯЗЫК) ---
 class StratosPro(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self.security = SecurityCore()
-        if not self.security.authenticate(self): sys.exit()
+        if not self.security.authenticate(self): 
+            sys.exit()
         
         self.engine = RadioEngine()
         self.init_ui()
@@ -191,7 +202,7 @@ class StratosPro(QtWidgets.QMainWindow):
         self.engine.start()
 
     def init_ui(self):
-        self.setWindowTitle("STRATOS RF ANALYZER v7.0 [PRO-LINK]")
+        self.setWindowTitle("STRATOS РФ АНАЛИЗАТОР v7.0 [PRO-LINK]")
         self.setStyleSheet("background: #050505; color: #00ff41; font-family: Consolas;")
         self.setMinimumSize(1200, 800)
 
@@ -199,12 +210,11 @@ class StratosPro(QtWidgets.QMainWindow):
         self.setCentralWidget(main_w)
         lay = QtWidgets.QHBoxLayout(main_w)
 
-        # Панель инструментов
+        # Боковая панель
         side = QtWidgets.QVBoxLayout()
-        side.addWidget(QtWidgets.QLabel("--- SYSTEM ---"))
+        side.addWidget(QtWidgets.QLabel("--- СИСТЕМА ---"))
         
-        # Кнопка Zadig
-        self.zadig_btn = QtWidgets.QPushButton("🛠 INSTALL USB DRIVER")
+        self.zadig_btn = QtWidgets.QPushButton("🛠 УСТАНОВИТЬ ДРАЙВЕР USB")
         self.zadig_btn.setStyleSheet("background: #111; border: 1px solid #00ff41; padding: 5px;")
         self.zadig_btn.clicked.connect(self.run_zadig)
         side.addWidget(self.zadig_btn)
@@ -215,45 +225,46 @@ class StratosPro(QtWidgets.QMainWindow):
         self.f_val.setRange(1.0, 10000.0)
         self.f_val.setValue(2400.0)
         self.f_val.valueChanged.connect(lambda v: setattr(self.engine, 'freq', v))
-        side.addWidget(QtWidgets.QLabel("FREQ (MHz):"))
+        side.addWidget(QtWidgets.QLabel("ЧАСТОТА (МГц):"))
         side.addWidget(self.f_val)
 
-        self.scan_btn = QtWidgets.QPushButton("START SCANNING")
+        self.scan_btn = QtWidgets.QPushButton("НАЧАТЬ СКАНИРОВАНИЕ")
         self.scan_btn.setCheckable(True)
         self.scan_btn.toggled.connect(self.toggle_scan)
         side.addWidget(self.scan_btn)
 
         side.addStretch()
-        self.stat_lab = QtWidgets.QLabel("STATUS: READY")
+        self.stat_lab = QtWidgets.QLabel("СТАТУС: ГОТОВ")
         side.addWidget(self.stat_lab)
         lay.addLayout(side, 1)
 
-        # Графика
+        # Графическая область
         v_lay = QtWidgets.QVBoxLayout()
         self.view = QtWidgets.QLabel()
+        self.view.setAlignment(QtCore.Qt.AlignCenter)
         v_lay.addWidget(self.view)
         
         self.plot = pg.PlotWidget()
         self.curve = self.plot.plot(pen=pg.mkPen('#00ff41'))
         self.plot.setYRange(-100, 20)
+        self.plot.setLabel('left', 'Амплитуда', units='дБ')
+        self.plot.setLabel('bottom', 'Спектр')
         v_lay.addWidget(self.plot)
         lay.addLayout(v_lay, 4)
 
     def run_zadig(self):
-        """Запуск Zadig из папки drivers."""
         zadig_path = os.path.join(DRIVERS_DIR, "Zadig.exe")
         if os.path.exists(zadig_path):
             try:
-                # Запуск с правами администратора
                 ctypes.windll.shell32.ShellExecuteW(None, "runas", zadig_path, None, None, 1)
             except Exception as e:
-                QtWidgets.QMessageBox.warning(self, "Error", f"Could not start Zadig: {e}")
+                QtWidgets.QMessageBox.warning(self, "Ошибка", f"Не удалось запустить Zadig: {e}")
         else:
-            QtWidgets.QMessageBox.critical(self, "Error", f"Zadig.exe not found in drivers folder!")
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Zadig.exe не найден в папке drivers!")
 
     def toggle_scan(self, state):
         self.engine.is_scanning = state
-        self.scan_btn.setText("STOP SCAN" if state else "START SCAN")
+        self.scan_btn.setText("ОСТАНОВИТЬ" if state else "НАЧАТЬ СКАНИРОВАНИЕ")
 
     def update_video(self, img):
         h, w, c = img.shape
@@ -262,11 +273,12 @@ class StratosPro(QtWidgets.QMainWindow):
 
     def update_spectrum(self, data, detected):
         self.curve.setData(data)
+        # Если сигнал обнаружен — линия красная, иначе зеленая
         self.curve.setPen(pg.mkPen('#ff3131' if detected else '#00ff41'))
 
     def update_status(self, temp, is_demo):
-        mode = "[DEMO]" if is_demo else "[HARDWARE]"
-        self.stat_lab.setText(f"MODE: {mode}\nTEMP: {temp:.1f}°C")
+        mode = "[ДЕМО-РЕЖИМ]" if is_demo else "[ОБОРУДОВАНИЕ]"
+        self.stat_lab.setText(f"РЕЖИМ: {mode}\nТЕМПЕРАТУРА: {temp:.1f}°C")
 
 if __name__ == "__main__":
     app = QtWidgets.QApplication(sys.argv)
