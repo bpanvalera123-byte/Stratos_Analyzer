@@ -48,69 +48,10 @@ try:
     from SoapySDR import *
     SDR_SUPPORTED = True
 except Exception as e:
-    print(f"🔴 Ошибка SDR модулей: {e}")
+    print(f"🔴 Ошибка модулей SDR: {e}")
     SDR_SUPPORTED = False
 
-# --- 2. СИСТЕМА БЕЗОПАСНОСТИ (ПАРОЛЬ: 5254) ---
-class SecurityCore:
-    def __init__(self):
-        self.settings = QtCore.QSettings("SystemVendor", "NetworkAnalyzer")
-        self.master_hash = "f29406085a5255476d65377f5f3e97022204c664319525c3822f30b9f712435e"
-        self.max_fails = 10
-
-    def get_hwid(self):
-        try:
-            cmd = "wmic csproduct get uuid"
-            uuid = subprocess.check_output(cmd, shell=True).decode().split('\n')[1].strip()
-            return hashlib.sha256(uuid.encode()).hexdigest()
-        except Exception:
-            return "hwid_generic_v1"
-
-    def wipe_system(self):
-        if os.path.exists("data_record.db"):
-            os.remove("data_record.db")
-        self.settings.clear()
-        self.settings.sync()
-        QtWidgets.QMessageBox.critical(None, "БЕЗОПАСНОСТЬ", "Доступ запрещен. Локальные данные стерты.")
-        sys.exit()
-
-    def authenticate(self, parent):
-        current_hwid = self.get_hwid()
-        saved_hwid = self.settings.value("hwid_token")
-        
-        try:
-            fails = int(self.settings.value("fails", 0))
-        except (ValueError, TypeError):
-            fails = 0
-
-        if saved_hwid == current_hwid:
-            return True
-            
-        if fails >= self.max_fails:
-            self.wipe_system()
-
-        while fails < self.max_fails:
-            key, ok = QtWidgets.QInputDialog.getText(parent, "🛡️ Активация системы", 
-                                                    f"Введите ключ доступа ({fails+1}/{self.max_fails}):", 
-                                                    QtWidgets.QLineEdit.Password)
-            if not ok: 
-                sys.exit()
-            
-            if hashlib.sha256(key.encode()).hexdigest() == self.master_hash:
-                self.settings.setValue("hwid_token", current_hwid)
-                self.settings.setValue("fails", 0)
-                self.settings.sync()
-                return True
-            else:
-                fails += 1
-                self.settings.setValue("fails", fails)
-                self.settings.sync()
-                if fails >= self.max_fails: 
-                    self.wipe_system()
-        
-        sys.exit()
-
-# --- 3. РАДИО-ДВИЖОК ---
+# --- 2. РАДИОДВИГАТЕЛЬ ---
 class RadioEngine(QtCore.QThread):
     on_frame = QtCore.pyqtSignal(np.ndarray)
     on_spec = QtCore.pyqtSignal(np.ndarray, bool)
@@ -142,6 +83,7 @@ class RadioEngine(QtCore.QThread):
                 self.is_demo = True
 
         buf = np.zeros(16384, dtype=np.complex64)
+        
         while self.running:
             if not self.is_demo and self.device:
                 try:
@@ -150,7 +92,8 @@ class RadioEngine(QtCore.QThread):
                     sr = self.device.readStream(self.rx_stream, [buf], len(buf), timeoutUs=50000)
                     if sr.ret > 0:
                         data = buf
-                    else: continue
+                    else:
+                        continue
                 except:
                     self.is_demo = True
                     continue
@@ -161,7 +104,7 @@ class RadioEngine(QtCore.QThread):
             psd = 20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(data))) + 1e-9)
             peak = np.max(psd)
             detected = peak > self.threshold
-            
+
             if self.is_scanning and not detected:
                 if (time.time() - self.last_lock_time) > self.lock_duration:
                     self.freq += self.scan_step
@@ -172,7 +115,7 @@ class RadioEngine(QtCore.QThread):
 
             self.on_spec.emit(psd[::16], detected)
             self.on_stat.emit(36.6, self.is_demo)
-            
+
             img = np.zeros((480, 640, 3), dtype=np.uint8)
             color = (0, 255, 0) if detected else (0, 120, 0)
             status_text = "ЗАХВАТ" if detected else "СКАНИРОВАНИЕ"
@@ -184,14 +127,11 @@ class RadioEngine(QtCore.QThread):
         self.running = False
         self.wait()
 
-# --- 4. ИНТЕРФЕЙС (РУССКИЙ ЯЗЫК) ---
+# --- 3. ИНТЕРФЕЙС ---
 class StratosPro(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.security = SecurityCore()
-        if not self.security.authenticate(self): 
-            sys.exit()
-        
+        # ПАРОЛЬ УДАЛЕН. Сразу инициализируем движок.
         self.engine = RadioEngine()
         self.init_ui()
         
@@ -202,7 +142,7 @@ class StratosPro(QtWidgets.QMainWindow):
         self.engine.start()
 
     def init_ui(self):
-        self.setWindowTitle("STRATOS РФ АНАЛИЗАТОР v7.0 [PRO-LINK]")
+        self.setWindowTitle("АНАЛИЗАТОР СТРАТОС РФ v7.0 [OPEN-LINK]")
         self.setStyleSheet("background: #050505; color: #00ff41; font-family: Consolas;")
         self.setMinimumSize(1200, 800)
 
@@ -214,17 +154,17 @@ class StratosPro(QtWidgets.QMainWindow):
         side = QtWidgets.QVBoxLayout()
         side.addWidget(QtWidgets.QLabel("--- СИСТЕМА ---"))
         
-        self.zadig_btn = QtWidgets.QPushButton("🛠 УСТАНОВИТЬ ДРАЙВЕР USB")
+        self.zadig_btn = QtWidgets.QPushButton("🛠 УСТАНОВИТЬ USB-ДРАЙВЕР")
         self.zadig_btn.setStyleSheet("background: #111; border: 1px solid #00ff41; padding: 5px;")
         self.zadig_btn.clicked.connect(self.run_zadig)
         side.addWidget(self.zadig_btn)
         
         side.addSpacing(20)
-        
         self.f_val = QtWidgets.QDoubleSpinBox()
         self.f_val.setRange(1.0, 10000.0)
         self.f_val.setValue(2400.0)
         self.f_val.valueChanged.connect(lambda v: setattr(self.engine, 'freq', v))
+        
         side.addWidget(QtWidgets.QLabel("ЧАСТОТА (МГц):"))
         side.addWidget(self.f_val)
 
@@ -232,7 +172,7 @@ class StratosPro(QtWidgets.QMainWindow):
         self.scan_btn.setCheckable(True)
         self.scan_btn.toggled.connect(self.toggle_scan)
         side.addWidget(self.scan_btn)
-
+        
         side.addStretch()
         self.stat_lab = QtWidgets.QLabel("СТАТУС: ГОТОВ")
         side.addWidget(self.stat_lab)
@@ -243,7 +183,7 @@ class StratosPro(QtWidgets.QMainWindow):
         self.view = QtWidgets.QLabel()
         self.view.setAlignment(QtCore.Qt.AlignCenter)
         v_lay.addWidget(self.view)
-        
+
         self.plot = pg.PlotWidget()
         self.curve = self.plot.plot(pen=pg.mkPen('#00ff41'))
         self.plot.setYRange(-100, 20)
@@ -260,7 +200,7 @@ class StratosPro(QtWidgets.QMainWindow):
             except Exception as e:
                 QtWidgets.QMessageBox.warning(self, "Ошибка", f"Не удалось запустить Zadig: {e}")
         else:
-            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Zadig.exe не найден в папке drivers!")
+            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Zadig.exe не найден в {DRIVERS_DIR}")
 
     def toggle_scan(self, state):
         self.engine.is_scanning = state
@@ -273,15 +213,4 @@ class StratosPro(QtWidgets.QMainWindow):
 
     def update_spectrum(self, data, detected):
         self.curve.setData(data)
-        # Если сигнал обнаружен — линия красная, иначе зеленая
-        self.curve.setPen(pg.mkPen('#ff3131' if detected else '#00ff41'))
-
-    def update_status(self, temp, is_demo):
-        mode = "[ДЕМО-РЕЖИМ]" if is_demo else "[ОБОРУДОВАНИЕ]"
-        self.stat_lab.setText(f"РЕЖИМ: {mode}\nТЕМПЕРАТУРА: {temp:.1f}°C")
-
-if __name__ == "__main__":
-    app = QtWidgets.QApplication(sys.argv)
-    window = StratosPro()
-    window.show()
-    sys.exit(app.exec_())
+        self
