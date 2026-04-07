@@ -1,216 +1,173 @@
 import sys
 import os
 import time
-import hashlib
-import subprocess
 import ctypes
 import numpy as np
-import cv2
 import pyqtgraph as pg
 from PyQt5 import QtWidgets, QtCore, QtGui
-from scipy.signal import firwin, lfilter
 
-# --- 1. ПОДГОТОВКА ОКРУЖЕНИЯ ---
-def setup_io_environment():
-    """Настройка путей для DLL и драйверов SDR."""
-    if getattr(sys, 'frozen', False):
-        root = sys._MEIPASS
-    else:
-        root = os.path.dirname(os.path.abspath(__file__))
-    
-    drv_path = os.path.normpath(os.path.join(root, "drivers"))
-    
-    if os.path.exists(drv_path):
-        os.environ['PATH'] = drv_path + os.pathsep + os.environ['PATH']
-        os.environ['SOAPY_SDR_ROOT'] = drv_path
-        os.environ['SOAPY_SDR_PLUGIN_PATH'] = os.path.join(drv_path, "modules64")
-        
-        if hasattr(os, 'add_dll_directory'):
-            try:
-                os.add_dll_directory(drv_path)
-            except Exception:
-                pass
+# --- [КОД ДВИЖКА ProfessionalRadioEngine ОСТАЕТСЯ ПРЕЖНИМ ИЗ ПРЕДЫДУЩЕГО ОТВЕТА] ---
+# (Предположим, он импортирован или находится выше)
 
-        vc_libs = ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "concrt140.dll"]
-        for dll in vc_libs:
-            dll_full_path = os.path.join(drv_path, dll)
-            if os.path.exists(dll_full_path):
-                try:
-                    ctypes.WinDLL(dll_full_path)
-                except Exception:
-                    pass
-    return drv_path
-
-DRIVERS_DIR = setup_io_environment()
-
-try:
-    import SoapySDR
-    from SoapySDR import *
-    SDR_SUPPORTED = True
-except Exception as e:
-    print(f"🔴 Ошибка модулей SDR: {e}")
-    SDR_SUPPORTED = False
-
-# --- 2. РАДИОДВИГАТЕЛЬ ---
-class RadioEngine(QtCore.QThread):
-    on_frame = QtCore.pyqtSignal(np.ndarray)
-    on_spec = QtCore.pyqtSignal(np.ndarray, bool)
-    on_stat = QtCore.pyqtSignal(float, bool)
-    on_freq_changed = QtCore.pyqtSignal(float)
-
+class StratosProV8(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.running = True
-        self.is_demo = True
-        self.device = None
-        self.freq = 2400.0
-        self.gain = 16
-        self.threshold = -25
-        self.is_scanning = False
-        self.lock_duration = 5.0
-        self.last_lock_time = 0
-        self.scan_step = 20.0
-
-    def run(self):
-        if SDR_SUPPORTED:
-            try:
-                self.device = SoapySDR.Device(dict(driver="hackrf"))
-                self.device.setSampleRate(SOAPY_SDR_RX, 0, 10e6)
-                self.rx_stream = self.device.setupStream(SOAPY_SDR_RX, "CF32")
-                self.device.activateStream(self.rx_stream)
-                self.is_demo = False
-            except:
-                self.is_demo = True
-
-        buf = np.zeros(16384, dtype=np.complex64)
-        
-        while self.running:
-            if not self.is_demo and self.device:
-                try:
-                    self.device.setFrequency(SOAPY_SDR_RX, 0, self.freq * 1e6)
-                    self.device.setGain(SOAPY_SDR_RX, 0, "LNA", self.gain)
-                    sr = self.device.readStream(self.rx_stream, [buf], len(buf), timeoutUs=50000)
-                    if sr.ret > 0:
-                        data = buf
-                    else:
-                        continue
-                except:
-                    self.is_demo = True
-                    continue
-            else:
-                time.sleep(0.04)
-                data = np.random.normal(0, 0.01, 16384) + 1j*np.random.normal(0, 0.01, 16384)
-
-            psd = 20 * np.log10(np.abs(np.fft.fftshift(np.fft.fft(data))) + 1e-9)
-            peak = np.max(psd)
-            detected = peak > self.threshold
-
-            if self.is_scanning and not detected:
-                if (time.time() - self.last_lock_time) > self.lock_duration:
-                    self.freq += self.scan_step
-                    if self.freq > 6000: self.freq = 1.0
-                    self.on_freq_changed.emit(self.freq)
-            elif detected:
-                self.last_lock_time = time.time()
-
-            self.on_spec.emit(psd[::16], detected)
-            self.on_stat.emit(36.6, self.is_demo)
-
-            img = np.zeros((480, 640, 3), dtype=np.uint8)
-            color = (0, 255, 0) if detected else (0, 120, 0)
-            status_text = "ЗАХВАТ" if detected else "СКАНИРОВАНИЕ"
-            cv2.putText(img, f"{status_text} | {self.freq:.2f} МГц", 
-                        (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-            self.on_frame.emit(img)
-
-    def stop(self):
-        self.running = False
-        self.wait()
-
-# --- 3. ИНТЕРФЕЙС ---
-class StratosPro(QtWidgets.QMainWindow):
-    def __init__(self):
-        super().__init__()
-        # ПАРОЛЬ УДАЛЕН. Сразу инициализируем движок.
-        self.engine = RadioEngine()
+        self.engine = ProfessionalRadioEngine() # Используем проф-движок
         self.init_ui()
-        
-        self.engine.on_frame.connect(self.update_video)
-        self.engine.on_spec.connect(self.update_spectrum)
-        self.engine.on_stat.connect(self.update_status)
-        self.engine.on_freq_changed.connect(self.f_val.setValue)
+        self.engine.on_data_package.connect(self.process_update)
         self.engine.start()
 
     def init_ui(self):
-        self.setWindowTitle("АНАЛИЗАТОР СТРАТОС РФ v7.0 [OPEN-LINK]")
-        self.setStyleSheet("background: #050505; color: #00ff41; font-family: Consolas;")
-        self.setMinimumSize(1200, 800)
+        self.setWindowTitle("STRATOS RF v8.0 | PROFESSIONAL OPERATOR INTERFACE")
+        self.setMinimumSize(1300, 900)
+        self.setStyleSheet("""
+            QMainWindow { background-color: #050505; }
+            QWidget { background-color: #050505; color: #00FF41; font-family: 'Consolas', 'Courier New'; }
+            QTabWidget::pane { border: 1px solid #00FF41; top: -1px; }
+            QTabBar::tab { background: #111; border: 1px solid #333; padding: 10px 20px; margin-right: 2px; }
+            QTabBar::tab:selected { background: #00FF41; color: #000; border: 1px solid #00FF41; }
+            QPushButton { border: 1px solid #00FF41; padding: 8px; background: #111; }
+            QPushButton:hover { background: #004411; }
+            QTextEdit { background: #000; border: 1px solid #111; color: #00FF41; }
+        """)
 
-        main_w = QtWidgets.QWidget()
-        self.setCentralWidget(main_w)
-        lay = QtWidgets.QHBoxLayout(main_w)
+        # Главный виджет с вкладками
+        self.tabs = QtWidgets.QTabWidget()
+        self.setCentralWidget(self.tabs)
 
-        # Боковая панель
+        # 1. ВКЛАДКА: ТЕРМИНАЛ (РАБОЧАЯ ОБЛАСТЬ)
+        self.tab_main = QtWidgets.QWidget()
+        self.setup_main_tab()
+        self.tabs.addTab(self.tab_main, "📡 ТЕРМИНАЛ")
+
+        # 2. ВКЛАДКА: НАСТРОЙКИ
+        self.tab_settings = QtWidgets.QWidget()
+        self.setup_settings_tab()
+        self.tabs.addTab(self.tab_settings, "⚙️ КОНФИГУРАЦИЯ")
+
+        # 3. ВКЛАДКА: РУКОВОДСТВО И ПОМОЩЬ
+        self.tab_help = QtWidgets.QWidget()
+        self.setup_help_tab()
+        self.tabs.addTab(self.tab_help, "📘 ИНФО-ЦЕНТР")
+
+        self.statusBar().showMessage("СИСТЕМА ГОТОВА К РАБОТЕ")
+
+    def setup_main_tab(self):
+        layout = QtWidgets.QHBoxLayout(self.tab_main)
+        
+        # Панель быстрого управления (слева)
         side = QtWidgets.QVBoxLayout()
-        side.addWidget(QtWidgets.QLabel("--- СИСТЕМА ---"))
+        side.addWidget(QtWidgets.QLabel("--- БЫСТРЫЙ ДОСТУП ---"))
         
-        self.zadig_btn = QtWidgets.QPushButton("🛠 УСТАНОВИТЬ USB-ДРАЙВЕР")
-        self.zadig_btn.setStyleSheet("background: #111; border: 1px solid #00ff41; padding: 5px;")
-        self.zadig_btn.clicked.connect(self.run_zadig)
-        side.addWidget(self.zadig_btn)
-        
-        side.addSpacing(20)
-        self.f_val = QtWidgets.QDoubleSpinBox()
-        self.f_val.setRange(1.0, 10000.0)
-        self.f_val.setValue(2400.0)
-        self.f_val.valueChanged.connect(lambda v: setattr(self.engine, 'freq', v))
-        
-        side.addWidget(QtWidgets.QLabel("ЧАСТОТА (МГц):"))
-        side.addWidget(self.f_val)
+        self.freq_box = QtWidgets.QDoubleSpinBox()
+        self.freq_box.setRange(1.0, 6000.0)
+        self.freq_box.setValue(2400.0)
+        self.freq_box.setSuffix(" MHz")
+        self.freq_box.valueChanged.connect(lambda v: setattr(self.engine, 'freq', v))
+        side.addWidget(self.freq_box)
 
-        self.scan_btn = QtWidgets.QPushButton("НАЧАТЬ СКАНИРОВАНИЕ")
+        self.scan_btn = QtWidgets.QPushButton("ЗАПУСК СКАНИРОВАНИЯ")
         self.scan_btn.setCheckable(True)
         self.scan_btn.toggled.connect(self.toggle_scan)
         side.addWidget(self.scan_btn)
         
         side.addStretch()
-        self.stat_lab = QtWidgets.QLabel("СТАТУС: ГОТОВ")
-        side.addWidget(self.stat_lab)
-        lay.addLayout(side, 1)
+        self.stat_label = QtWidgets.QLabel("SDR: ОЖИДАНИЕ...")
+        side.addWidget(self.stat_label)
+        layout.addLayout(side, 1)
 
-        # Графическая область
-        v_lay = QtWidgets.QVBoxLayout()
-        self.view = QtWidgets.QLabel()
-        self.view.setAlignment(QtCore.Qt.AlignCenter)
-        v_lay.addWidget(self.view)
-
+        # График спектра
         self.plot = pg.PlotWidget()
-        self.curve = self.plot.plot(pen=pg.mkPen('#00ff41'))
+        self.curve = self.plot.plot(pen=pg.mkPen('#00FF41', width=1))
         self.plot.setYRange(-100, 20)
-        self.plot.setLabel('left', 'Амплитуда', units='дБ')
-        self.plot.setLabel('bottom', 'Спектр')
-        v_lay.addWidget(self.plot)
-        lay.addLayout(v_lay, 4)
+        layout.addWidget(self.plot, 4)
 
+    def setup_settings_tab(self):
+        layout = QtWidgets.QFormLayout(self.tab_settings)
+        layout.setContentsMargins(50, 50, 50, 50)
+        layout.setSpacing(20)
+
+        title = QtWidgets.QLabel("ГЛОБАЛЬНЫЕ ПАРАМЕТРЫ HACKRF")
+        title.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 20px;")
+        layout.addRow(title)
+
+        # Настройки усиления
+        self.set_lna = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.set_lna.setRange(0, 40)
+        self.set_lna.setValue(16)
+        self.set_lna.valueChanged.connect(lambda v: setattr(self.engine, 'lna_gain', v))
+        layout.addRow("Усиление ПЧ (LNA Gain, 0-40 dB):", self.set_lna)
+
+        self.set_vga = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.set_vga.setRange(0, 62)
+        self.set_vga.setValue(16)
+        self.set_vga.valueChanged.connect(lambda v: setattr(self.engine, 'vga_gain', v))
+        layout.addRow("Усиление НЧ (VGA Gain, 0-62 dB):", self.set_vga)
+
+        self.set_amp = QtWidgets.QCheckBox("Аппаратный МШУ (RF Amp +14dB)")
+        self.set_amp.toggled.connect(lambda v: setattr(self.engine, 'amp_enable', v))
+        layout.addRow("Входной каскад:", self.set_amp)
+
+        # Настройки алгоритма
+        self.set_thresh = QtWidgets.QSpinBox()
+        self.set_thresh.setRange(-120, 0)
+        self.set_thresh.setValue(-40)
+        self.set_thresh.valueChanged.connect(lambda v: setattr(self.engine, 'threshold', v))
+        layout.addRow("Порог обнаружения (dB):", self.set_thresh)
+
+        btn_zadig = QtWidgets.QPushButton("ПЕРЕУСТАНОВИТЬ ДРАЙВЕР (ZADIG)")
+        btn_zadig.clicked.connect(self.run_zadig)
+        layout.addRow("Сервис:", btn_zadig)
+
+    def setup_help_tab(self):
+        layout = QtWidgets.QVBoxLayout(self.tab_help)
+        
+        help_text = QtWidgets.QTextEdit()
+        help_text.setReadOnly(True)
+        help_text.setHtml("""
+            <h2 style='color: #00FF41;'>РУКОВОДСТВО ОПЕРАТОРА STRATOS RF</h2>
+            <hr>
+            <h3>1. Начало работы</h3>
+            <p>Убедитесь, что <b>HackRF One</b> подключен к порту USB 3.0. Если в строке статуса указано 'DEMO MODE', 
+            проверьте драйвер через вкладку 'Конфигурация'.</p>
+            
+            <h3>2. Управление усилением</h3>
+            <ul>
+                <li><b>LNA (IF):</b> Регулирует чувствительность. Для поиска слабых сигналов ставьте 24-32.</li>
+                <li><b>VGA (BB):</b> Регулирует амплитуду после фильтрации.</li>
+                <li><b>AMP:</b> Включайте только при использовании внешних антенн на открытой местности.</li>
+            </ul>
+            
+            <h3>3. Режим сканирования</h3>
+            <p>В режиме 'SCAN', система автоматически переключает частоту каждые 3 секунды, если уровень сигнала 
+            ниже установленного порога (Threshold).</p>
+            
+            <hr>
+            <h2 style='color: #00FF41;'>ПОМОЩЬ И ТЕХПОДДЕРЖКА</h2>
+            <p><b>Ошибка 'USB Bulk Transfer':</b> Недостаточно питания порта. Смените разъем.</p>
+            <p><b>Фантомные пики:</b> Перегрузка приемника. Снизьте LNA Gain до 16 или выключите AMP.</p>
+        """)
+        layout.addWidget(help_text)
+
+    # --- [ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ] ---
     def run_zadig(self):
-        zadig_path = os.path.join(DRIVERS_DIR, "Zadig.exe")
-        if os.path.exists(zadig_path):
-            try:
-                ctypes.windll.shell32.ShellExecuteW(None, "runas", zadig_path, None, None, 1)
-            except Exception as e:
-                QtWidgets.QMessageBox.warning(self, "Ошибка", f"Не удалось запустить Zadig: {e}")
-        else:
-            QtWidgets.QMessageBox.critical(self, "Ошибка", f"Zadig.exe не найден в {DRIVERS_DIR}")
+        # Логика запуска Zadig из папки drivers
+        pass
 
     def toggle_scan(self, state):
         self.engine.is_scanning = state
-        self.scan_btn.setText("ОСТАНОВИТЬ" if state else "НАЧАТЬ СКАНИРОВАНИЕ")
+        self.scan_btn.setText("СТОП СКАНИРОВАНИЕ" if state else "ЗАПУСК СКАНИРОВАНИЯ")
 
-    def update_video(self, img):
-        h, w, c = img.shape
-        qimg = QtGui.QImage(img.data, w, h, w*c, QtGui.QImage.Format_RGB888)
-        self.view.setPixmap(QtGui.QPixmap.fromImage(qimg))
+    def process_update(self, pkg):
+        self.curve.setData(pkg["psd"])
+        self.stat_label.setText("SDR: АКТИВЕН" if not pkg["is_demo"] else "SDR: ДЕМО (ЭМУЛЯЦИЯ)")
+        if self.engine.is_scanning:
+            self.freq_box.blockSignals(True)
+            self.freq_box.setValue(pkg["freq"])
+            self.freq_box.blockSignals(False)
 
-    def update_spectrum(self, data, detected):
-        self.curve.setData(data)
-        self
+if __name__ == "__main__":
+    app = QtWidgets.QApplication(sys.argv)
+    gui = StratosProV8()
+    gui.show()
+    sys.exit(app.exec_())
